@@ -4,6 +4,7 @@ import {
   type ResolveNavaiMobileApplicationRuntimeConfigResult
 } from "@navai/voice-mobile";
 import { StyleSheet, Text, View } from "react-native";
+import { useElevenLabsSpeechPlayer } from "./useElevenLabsSpeechPlayer";
 
 export type VoiceNavigatorProps = {
   activePath: string;
@@ -20,11 +21,13 @@ export function VoiceNavigator({
   runtimeError,
   navigate
 }: VoiceNavigatorProps) {
+  const speechPlayer = useElevenLabsSpeechPlayer();
   const agent = useMobileVoiceAgent({
     runtime,
     runtimeLoading,
     runtimeError,
-    navigate
+    navigate,
+    speechPlayer
   });
   const cardToneStyle = agent.status === "error" ? styles.cardError : agent.isAgentSpeaking ? styles.cardSpeaking : null;
   const statusToneStyle =

@@ -59,6 +59,16 @@ class Navai_Voice_API
 
         register_rest_route(
             'navai/v1',
+            '/speech/synthesize',
+            [
+                'methods' => WP_REST_Server::CREATABLE,
+                'callback' => [$this, 'synthesize_speech'],
+                'permission_callback' => [$this, 'can_create_client_secret'],
+            ]
+        );
+
+        register_rest_route(
+            'navai/v1',
             '/functions',
             [
                 'methods' => WP_REST_Server::READABLE,
@@ -527,8 +537,9 @@ class Navai_Voice_API
             );
         }
 
-        $settings = $this->settings->get_settings();
+        $settings = $this->settings->get_runtime_settings();
         $apiKey = trim((string) ($settings['openai_api_key'] ?? ''));
+        $speechProvider = $this->resolve_speech_provider($settings);
 
         if ($apiKey === '') {
             return new WP_Error(
@@ -536,6 +547,13 @@ class Navai_Voice_API
                 'Missing OpenAI API key in NAVAI settings.',
                 ['status' => 500]
             );
+        }
+
+        if ($speechProvider === 'elevenlabs') {
+            $speechSettingsError = $this->validate_elevenlabs_runtime_settings($settings);
+            if ($speechSettingsError instanceof WP_Error) {
+                return $speechSettingsError;
+            }
         }
 
         $input = $request->get_json_params();
@@ -587,26 +605,33 @@ class Navai_Voice_API
             $ttl = 600;
         }
 
+        $sessionPayload = [
+            'type' => 'realtime',
+            'model' => $model,
+            'instructions' => $this->build_session_instructions(
+                $baseInstructions,
+                $language,
+                $voiceAccent,
+                $voiceTone
+            ),
+        ];
+
+        if ($speechProvider === 'elevenlabs') {
+            $sessionPayload['output_modalities'] = ['text'];
+        } else {
+            $sessionPayload['audio'] = [
+                'output' => [
+                    'voice' => $voice,
+                ],
+            ];
+        }
+
         $payload = [
             'expires_after' => [
                 'anchor' => 'created_at',
                 'seconds' => $ttl,
             ],
-            'session' => [
-                'type' => 'realtime',
-                'model' => $model,
-                'instructions' => $this->build_session_instructions(
-                    $baseInstructions,
-                    $language,
-                    $voiceAccent,
-                    $voiceTone
-                ),
-                'audio' => [
-                    'output' => [
-                        'voice' => $voice,
-                    ],
-                ],
-            ],
+            'session' => $sessionPayload,
         ];
 
         $response = wp_remote_post(
@@ -669,7 +694,8 @@ class Navai_Voice_API
                     'content_json' => [
                         'type' => 'client_secret_issued',
                         'model' => $model,
-                        'voice' => $voice,
+                        'voice' => $speechProvider === 'openai' ? $voice : null,
+                        'speech_provider' => $speechProvider,
                         'expires_at' => isset($data['expires_at']) ? (int) $data['expires_at'] : null,
                     ],
                 ]
@@ -688,6 +714,9 @@ class Navai_Voice_API
                         : null,
                     'key' => isset($sessionContext['session_key']) ? (string) $sessionContext['session_key'] : '',
                 ],
+                'speech' => [
+                    'provider' => $speechProvider,
+                ],
                 'agent' => is_array($resolvedClientAgent)
                     ? [
                         'id' => isset($resolvedClientAgent['id']) ? (int) $resolvedClientAgent['id'] : null,
@@ -695,6 +724,102 @@ class Navai_Voice_API
                         'name' => (string) ($resolvedClientAgent['name'] ?? ''),
                     ]
                     : null,
+            ]
+        );
+    }
+
+    public function synthesize_speech(WP_REST_Request $request)
+    {
+        if (!$this->check_rate_limit()) {
+            return new WP_Error(
+                'navai_rate_limit',
+                'Too many requests. Try again in a moment.',
+                ['status' => 429]
+            );
+        }
+
+        $settings = $this->settings->get_runtime_settings();
+        if ($this->resolve_speech_provider($settings) !== 'elevenlabs') {
+            return new WP_Error(
+                'navai_speech_provider_disabled',
+                'ElevenLabs speech is not enabled for this site.',
+                ['status' => 400]
+            );
+        }
+
+        $speechSettingsError = $this->validate_elevenlabs_runtime_settings($settings);
+        if ($speechSettingsError instanceof WP_Error) {
+            return $speechSettingsError;
+        }
+
+        $input = $request->get_json_params();
+        if (!is_array($input)) {
+            $input = [];
+        }
+
+        $text = isset($input['text']) && is_string($input['text']) ? trim($input['text']) : '';
+        if ($text === '') {
+            return new WP_Error(
+                'navai_missing_speech_text',
+                'Missing text to synthesize.',
+                ['status' => 400]
+            );
+        }
+
+        $synthesizeRequest = $this->build_elevenlabs_synthesize_request($settings, $text);
+        $expectedMimeType = $this->infer_audio_mime_type_from_output_format($settings);
+        $response = wp_remote_post(
+            $synthesizeRequest['url'],
+            [
+                'timeout' => 20,
+                'headers' => [
+                    'xi-api-key' => trim((string) ($settings['elevenlabs_api_key'] ?? '')),
+                    'Accept' => $expectedMimeType,
+                    'Content-Type' => 'application/json',
+                ],
+                'body' => wp_json_encode($synthesizeRequest['body']),
+            ]
+        );
+
+        if (is_wp_error($response)) {
+            return new WP_Error('navai_elevenlabs_error', $response->get_error_message(), ['status' => 500]);
+        }
+
+        $statusCode = (int) wp_remote_retrieve_response_code($response);
+        $body = (string) wp_remote_retrieve_body($response);
+        if ($statusCode < 200 || $statusCode >= 300) {
+            $errorPayload = json_decode($body, true);
+            $message = is_array($errorPayload) && isset($errorPayload['detail']['message'])
+                ? (string) $errorPayload['detail']['message']
+                : (is_array($errorPayload) && isset($errorPayload['message'])
+                    ? (string) $errorPayload['message']
+                    : $body);
+
+            return new WP_Error(
+                'navai_elevenlabs_http_error',
+                sprintf('ElevenLabs synthesis failed (%d): %s', $statusCode, $message),
+                ['status' => 502]
+            );
+        }
+
+        if ($body === '') {
+            return new WP_Error(
+                'navai_invalid_elevenlabs_response',
+                'ElevenLabs returned an empty audio payload.',
+                ['status' => 502]
+            );
+        }
+
+        $mimeType = trim((string) wp_remote_retrieve_header($response, 'content-type'));
+        if ($mimeType === '') {
+            $mimeType = $expectedMimeType;
+        }
+
+        return rest_ensure_response(
+            [
+                'provider' => 'elevenlabs',
+                'mimeType' => $mimeType,
+                'audioBase64' => base64_encode($body),
             ]
         );
     }

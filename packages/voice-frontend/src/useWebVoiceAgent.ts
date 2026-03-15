@@ -2,7 +2,7 @@ import { RealtimeSession } from "@openai/agents/realtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildNavaiAgent } from "./agent";
-import { createNavaiBackendClient } from "./backend";
+import { createNavaiBackendClient, type NavaiSpeechProvider, type SynthesizeSpeechOutput } from "./backend";
 import type { NavaiFunctionModuleLoaders } from "./functions";
 import type { NavaiRoute } from "./routes";
 import { resolveNavaiFrontendRuntimeConfig } from "./runtime";
@@ -12,6 +12,11 @@ type AgentVoiceState = "idle" | "speaking";
 
 type NavaiFrontendEnv = Record<string, string | undefined>;
 const DEBUG_PREFIX = "[navai debug]";
+
+type ActivePlayback = {
+  audio: HTMLAudioElement;
+  url: string;
+};
 
 export type UseWebVoiceAgentOptions = {
   navigate: (path: string) => void;
@@ -63,9 +68,114 @@ function debugLog(message: string, details?: unknown): void {
   console.log(`${DEBUG_PREFIX} ${message}`, details);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object");
+}
+
+function readRealtimeEventType(event: unknown): string {
+  if (!isRecord(event) || typeof event.type !== "string") {
+    return "";
+  }
+
+  return event.type.trim().toLowerCase();
+}
+
+function readAssistantTextFromResponseOutput(items: unknown[]): string {
+  const parts: string[] = [];
+
+  for (const item of items) {
+    if (!isRecord(item) || item.type !== "message" || item.role !== "assistant") {
+      continue;
+    }
+
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const chunk of content) {
+      if (!isRecord(chunk)) {
+        continue;
+      }
+
+      const text =
+        chunk.type === "output_text"
+          ? typeof chunk.text === "string"
+            ? chunk.text
+            : ""
+          : chunk.type === "output_audio"
+            ? typeof chunk.transcript === "string"
+              ? chunk.transcript
+              : ""
+            : "";
+      const normalized = text.trim();
+      if (normalized) {
+        parts.push(normalized);
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+function extractAssistantTextFromRealtimeEvent(event: unknown): { key: string; text: string } | null {
+  if (!isRecord(event)) {
+    return null;
+  }
+
+  const eventType = readRealtimeEventType(event);
+  if (
+    eventType === "response.output_text.done" ||
+    eventType === "response.text.done" ||
+    eventType === "response.audio_transcript.done"
+  ) {
+    const text =
+      typeof event.text === "string"
+        ? event.text.trim()
+        : typeof event.transcript === "string"
+          ? event.transcript.trim()
+          : "";
+    if (!text) {
+      return null;
+    }
+
+    const key = [
+      eventType,
+      typeof event.response_id === "string" ? event.response_id : "",
+      typeof event.item_id === "string" ? event.item_id : ""
+    ]
+      .filter(Boolean)
+      .join(":");
+
+    return { key: key || `${eventType}:${text}`, text };
+  }
+
+  if (eventType === "response.done" && isRecord(event.response) && Array.isArray(event.response.output)) {
+    const text = readAssistantTextFromResponseOutput(event.response.output);
+    if (!text) {
+      return null;
+    }
+
+    const responseId = typeof event.response.id === "string" ? event.response.id : "";
+    return { key: responseId ? `response.done:${responseId}` : `response.done:${text}`, text };
+  }
+
+  return null;
+}
+
+function audioUrlFromSynthesis(result: SynthesizeSpeechOutput): string {
+  const binary = atob(result.audioBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return URL.createObjectURL(new Blob([bytes], { type: result.mimeType }));
+}
+
 export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceAgentResult {
   const sessionRef = useRef<RealtimeSession | null>(null);
   const attachedRealtimeSessionRef = useRef<RealtimeSession | null>(null);
+  const speechProviderRef = useRef<NavaiSpeechProvider>("openai");
+  const spokenAssistantKeysRef = useRef<Set<string>>(new Set());
+  const playbackGenerationRef = useRef(0);
+  const activePlaybackRef = useRef<ActivePlayback | null>(null);
   const runtimeConfigPromise = useMemo(
     () =>
       resolveNavaiFrontendRuntimeConfig({
@@ -108,6 +218,80 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
     setAgentVoiceState((current) => (current === next ? current : next));
   }, []);
 
+  const clearPlayback = useCallback(
+    (options?: { invalidate?: boolean; resetState?: boolean }) => {
+      if (options?.invalidate) {
+        playbackGenerationRef.current += 1;
+      }
+
+      const active = activePlaybackRef.current;
+      if (active) {
+        try {
+          active.audio.pause();
+          active.audio.currentTime = 0;
+        } catch {
+          // ignore browser playback cleanup failures
+        }
+        URL.revokeObjectURL(active.url);
+      }
+
+      activePlaybackRef.current = null;
+      if (options?.resetState !== false) {
+        setAgentVoiceStateIfChanged("idle");
+      }
+    },
+    [setAgentVoiceStateIfChanged]
+  );
+
+  const playAssistantSpeech = useCallback(
+    async (text: string): Promise<void> => {
+      if (speechProviderRef.current !== "elevenlabs") {
+        return;
+      }
+
+      const normalized = text.trim();
+      if (!normalized) {
+        return;
+      }
+
+      clearPlayback({ resetState: false });
+      const generation = playbackGenerationRef.current + 1;
+      playbackGenerationRef.current = generation;
+      setAgentVoiceStateIfChanged("speaking");
+
+      try {
+        const synthesized = await backendClient.synthesizeSpeech({ text: normalized });
+        if (speechProviderRef.current !== "elevenlabs" || playbackGenerationRef.current !== generation) {
+          return;
+        }
+
+        const audio = new Audio();
+        const url = audioUrlFromSynthesis(synthesized);
+        audio.src = url;
+        audio.autoplay = false;
+        activePlaybackRef.current = { audio, url };
+
+        const finish = (): void => {
+          if (activePlaybackRef.current?.audio === audio) {
+            clearPlayback({ resetState: true });
+          } else {
+            URL.revokeObjectURL(url);
+          }
+        };
+
+        audio.addEventListener("ended", finish, { once: true });
+        audio.addEventListener("error", finish, { once: true });
+        await audio.play();
+      } catch (playbackError) {
+        debugLog("assistant speech playback failed", playbackError);
+        if (playbackGenerationRef.current === generation) {
+          clearPlayback({ resetState: true });
+        }
+      }
+    },
+    [backendClient, clearPlayback, setAgentVoiceStateIfChanged]
+  );
+
   const handleSessionAudioStart = useCallback((): void => {
     setAgentVoiceStateIfChanged("speaking");
   }, [setAgentVoiceStateIfChanged]);
@@ -117,12 +301,44 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
   }, [setAgentVoiceStateIfChanged]);
 
   const handleSessionAudioInterrupted = useCallback((): void => {
+    clearPlayback({ invalidate: true, resetState: true });
     setAgentVoiceStateIfChanged("idle");
-  }, [setAgentVoiceStateIfChanged]);
+  }, [clearPlayback, setAgentVoiceStateIfChanged]);
 
   const handleSessionError = useCallback((): void => {
+    clearPlayback({ invalidate: true, resetState: true });
     setAgentVoiceStateIfChanged("idle");
-  }, [setAgentVoiceStateIfChanged]);
+  }, [clearPlayback, setAgentVoiceStateIfChanged]);
+
+  const handleTransportEvent = useCallback(
+    (event: unknown): void => {
+      const eventType = readRealtimeEventType(event);
+      if (!eventType) {
+        return;
+      }
+
+      if (
+        eventType === "input_audio_buffer.speech_started" ||
+        eventType === "conversation.item.input_audio_transcription.started"
+      ) {
+        clearPlayback({ invalidate: true, resetState: true });
+        return;
+      }
+
+      if (speechProviderRef.current !== "elevenlabs") {
+        return;
+      }
+
+      const assistantText = extractAssistantTextFromRealtimeEvent(event);
+      if (!assistantText || spokenAssistantKeysRef.current.has(assistantText.key)) {
+        return;
+      }
+
+      spokenAssistantKeysRef.current.add(assistantText.key);
+      void playAssistantSpeech(assistantText.text);
+    },
+    [clearPlayback, playAssistantSpeech]
+  );
 
   const detachSessionAudioListeners = useCallback(() => {
     const attachedSession = attachedRealtimeSessionRef.current;
@@ -133,9 +349,16 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
     attachedSession.off("audio_start", handleSessionAudioStart);
     attachedSession.off("audio_stopped", handleSessionAudioStopped);
     attachedSession.off("audio_interrupted", handleSessionAudioInterrupted);
+    attachedSession.off("transport_event", handleTransportEvent);
     attachedSession.off("error", handleSessionError);
     attachedRealtimeSessionRef.current = null;
-  }, [handleSessionAudioInterrupted, handleSessionAudioStart, handleSessionAudioStopped, handleSessionError]);
+  }, [
+    handleSessionAudioInterrupted,
+    handleSessionAudioStart,
+    handleSessionAudioStopped,
+    handleSessionError,
+    handleTransportEvent
+  ]);
 
   const attachSessionAudioListeners = useCallback(
     (session: RealtimeSession) => {
@@ -176,6 +399,7 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
       session.on("history_added", (item) => {
         debugLog("session history_added", item);
       });
+      session.on("transport_event", handleTransportEvent);
       session.on("error", (sessionError) => {
         debugLog("session error", sessionError);
       });
@@ -190,20 +414,24 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
       handleSessionAudioInterrupted,
       handleSessionAudioStart,
       handleSessionAudioStopped,
-      handleSessionError
+      handleSessionError,
+      handleTransportEvent
     ]
   );
 
   const stop = useCallback(() => {
     detachSessionAudioListeners();
+    clearPlayback({ invalidate: true, resetState: true });
     try {
       sessionRef.current?.close();
     } finally {
       sessionRef.current = null;
+      spokenAssistantKeysRef.current.clear();
+      speechProviderRef.current = "openai";
       setStatus("idle");
       setAgentVoiceStateIfChanged("idle");
     }
-  }, [detachSessionAudioListeners, setAgentVoiceStateIfChanged]);
+  }, [clearPlayback, detachSessionAudioListeners, setAgentVoiceStateIfChanged]);
 
   useEffect(() => {
     return () => {
@@ -235,6 +463,9 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
       });
       const requestPayload = runtimeConfig.modelOverride ? { model: runtimeConfig.modelOverride } : {};
       const secretPayload = await backendClient.createClientSecret(requestPayload);
+      speechProviderRef.current = secretPayload.speech.provider;
+      spokenAssistantKeysRef.current.clear();
+      clearPlayback({ invalidate: true, resetState: true });
       const backendFunctionsResult = await backendClient.listFunctions();
 
       const { agent, warnings } = await buildNavaiAgent({
@@ -248,7 +479,14 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
       });
       emitWarnings([...runtimeConfig.warnings, ...backendFunctionsResult.warnings, ...warnings]);
 
-      const session = new RealtimeSession(agent);
+      const session =
+        secretPayload.speech.provider === "elevenlabs"
+          ? new RealtimeSession(agent, {
+              config: {
+                outputModalities: ["text"]
+              }
+            })
+          : new RealtimeSession(agent);
       attachSessionAudioListeners(session);
 
       if (runtimeConfig.modelOverride) {
@@ -266,6 +504,9 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
       setStatus("error");
       setAgentVoiceStateIfChanged("idle");
       detachSessionAudioListeners();
+      clearPlayback({ invalidate: true, resetState: true });
+      spokenAssistantKeysRef.current.clear();
+      speechProviderRef.current = "openai";
 
       try {
         sessionRef.current?.close();
@@ -277,6 +518,7 @@ export function useWebVoiceAgent(options: UseWebVoiceAgentOptions): UseWebVoiceA
   }, [
     attachSessionAudioListeners,
     backendClient,
+    clearPlayback,
     detachSessionAudioListeners,
     options.navigate,
     runtimeConfigPromise,

@@ -29,6 +29,7 @@ This package is intentionally split by concern:
 1. `src/backend.ts`
 HTTP client for backend routes:
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
@@ -70,6 +71,7 @@ Hook-driven runtime flow (`useWebVoiceAgent`):
 2. Create backend client with `apiBaseUrl` or `NAVAI_API_URL`.
 3. On `start()`:
 - request client secret.
+- read `speech.provider` from backend response.
 - fetch backend function list.
 - build Navai agent with local + backend functions.
 - connect `RealtimeSession`.
@@ -108,7 +110,16 @@ Useful types:
 - `NavaiFunctionDefinition`
 - `NavaiFunctionsRegistry`
 - `NavaiBackendFunctionDefinition`
+- `NavaiBackendSpeechConfig`
 - `UseWebVoiceAgentOptions`
+
+## Hybrid Speech Mode
+
+When backend returns `speech.provider: "elevenlabs"`:
+
+- `useWebVoiceAgent` updates the Realtime session to use `output_modalities: ["text"]`.
+- assistant final text is sent to `backendClient.synthesizeSpeech(...)`.
+- playback happens locally in the browser with the synthesized ElevenLabs audio.
 
 ## Tool Model and Behavior
 
@@ -250,6 +261,7 @@ For browser realtime multi-agent orchestration, `buildNavaiAgent` currently wire
 Methods:
 
 - `createClientSecret(input?)`
+- `synthesizeSpeech({ text, ... })`
 - `listFunctions()`
 - `executeFunction({ functionName, payload })`
 
@@ -257,6 +269,7 @@ Error handling:
 
 - network/HTTP failures throw for create/execute.
 - function listing returns warnings and empty list on failures.
+- `createClientSecret()` returns `{ value, expires_at, speech }`, where `speech.provider` is `openai` or `elevenlabs`.
 
 ## Generated Module Loader CLI
 

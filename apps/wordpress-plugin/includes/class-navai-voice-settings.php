@@ -31,6 +31,14 @@ class Navai_Voice_Settings
         return wp_parse_args($stored, $this->get_defaults());
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function get_runtime_settings(): array
+    {
+        return $this->apply_environment_overrides($this->get_settings());
+    }
+
     public function register_menu(): void
     {
         add_menu_page(
@@ -208,6 +216,67 @@ class Navai_Voice_Settings
             0,
             2000
         );
+        $ttsProvider = $this->sanitize_tts_provider(
+            $source['tts_provider'] ?? ($previous['tts_provider'] ?? $defaults['tts_provider'])
+        );
+        $elevenLabsBaseUrl = $this->read_text_value(
+            $source,
+            $previous,
+            $defaults,
+            'elevenlabs_base_url',
+            true
+        );
+        $elevenLabsVoiceId = $this->read_text_value(
+            $source,
+            $previous,
+            $defaults,
+            'elevenlabs_voice_id',
+            false
+        );
+        $elevenLabsModelId = $this->read_text_value(
+            $source,
+            $previous,
+            $defaults,
+            'elevenlabs_model_id',
+            false
+        );
+        $elevenLabsOutputFormat = $this->read_text_value(
+            $source,
+            $previous,
+            $defaults,
+            'elevenlabs_output_format',
+            true
+        );
+        $elevenLabsOptimizeStreamingLatency = $this->sanitize_int_range_value(
+            $source['elevenlabs_optimize_streaming_latency'] ?? ($previous['elevenlabs_optimize_streaming_latency'] ?? $defaults['elevenlabs_optimize_streaming_latency']),
+            (int) ($defaults['elevenlabs_optimize_streaming_latency'] ?? 0),
+            0,
+            4
+        );
+        $elevenLabsStability = $this->sanitize_float_range_value(
+            $source['elevenlabs_stability'] ?? ($previous['elevenlabs_stability'] ?? $defaults['elevenlabs_stability']),
+            (float) ($defaults['elevenlabs_stability'] ?? 0.5),
+            0.0,
+            1.0,
+            2
+        );
+        $elevenLabsSimilarityBoost = $this->sanitize_float_range_value(
+            $source['elevenlabs_similarity_boost'] ?? ($previous['elevenlabs_similarity_boost'] ?? $defaults['elevenlabs_similarity_boost']),
+            (float) ($defaults['elevenlabs_similarity_boost'] ?? 0.75),
+            0.0,
+            1.0,
+            2
+        );
+        $elevenLabsStyle = $this->sanitize_float_range_value(
+            $source['elevenlabs_style'] ?? ($previous['elevenlabs_style'] ?? $defaults['elevenlabs_style']),
+            (float) ($defaults['elevenlabs_style'] ?? 0.0),
+            0.0,
+            1.0,
+            2
+        );
+        $elevenLabsUseSpeakerBoost = array_key_exists('elevenlabs_use_speaker_boost', $source)
+            ? !empty($source['elevenlabs_use_speaker_boost'])
+            : (!empty($previous['elevenlabs_use_speaker_boost']) || (!array_key_exists('elevenlabs_use_speaker_boost', $previous) && !empty($defaults['elevenlabs_use_speaker_boost'])));
         $privateRoutePluginCatalog = $this->get_private_route_plugin_catalog($previous['private_custom_routes'] ?? []);
         $availableRoles = $this->get_available_roles();
         $privateCustomRoutes = $this->sanitize_private_custom_routes(
@@ -259,6 +328,17 @@ class Navai_Voice_Settings
             'default_language' => $this->read_text_value($source, $previous, $defaults, 'default_language', false),
             'default_voice_accent' => $this->read_text_value($source, $previous, $defaults, 'default_voice_accent', false),
             'default_voice_tone' => $this->read_text_value($source, $previous, $defaults, 'default_voice_tone', false),
+            'tts_provider' => $ttsProvider,
+            'elevenlabs_api_key' => $this->read_text_value($source, $previous, $defaults, 'elevenlabs_api_key', false),
+            'elevenlabs_base_url' => $elevenLabsBaseUrl,
+            'elevenlabs_voice_id' => $elevenLabsVoiceId,
+            'elevenlabs_model_id' => $elevenLabsModelId,
+            'elevenlabs_output_format' => $elevenLabsOutputFormat,
+            'elevenlabs_optimize_streaming_latency' => $elevenLabsOptimizeStreamingLatency,
+            'elevenlabs_stability' => $elevenLabsStability,
+            'elevenlabs_similarity_boost' => $elevenLabsSimilarityBoost,
+            'elevenlabs_style' => $elevenLabsStyle,
+            'elevenlabs_use_speaker_boost' => $elevenLabsUseSpeakerBoost,
             'realtime_turn_detection_mode' => $realtimeTurnDetectionMode,
             'realtime_interrupt_response' => $realtimeInterruptResponse,
             'realtime_vad_threshold' => $realtimeVadThreshold,

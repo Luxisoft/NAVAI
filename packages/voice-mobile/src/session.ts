@@ -2,6 +2,7 @@ import {
   createNavaiMobileBackendClient,
   type BackendFunctionsResult,
   type CreateNavaiMobileBackendClientOptions,
+  type NavaiBackendSpeechConfig,
   type CreateRealtimeClientSecretInput,
   type ExecuteNavaiBackendFunctionInput,
   type NavaiBackendFunctionDefinition,
@@ -17,6 +18,7 @@ export type StartNavaiMobileVoiceSessionInput = CreateRealtimeClientSecretInput 
 
 export type StartNavaiMobileVoiceSessionResult = {
   clientSecret: string;
+  speech: NavaiBackendSpeechConfig;
   backendFunctions: NavaiBackendFunctionDefinition[];
   warnings: string[];
 };
@@ -88,6 +90,7 @@ export function createNavaiMobileVoiceSession(options: CreateNavaiMobileVoiceSes
       state = "connected";
       return {
         clientSecret: secret.value,
+        speech: secret.speech,
         backendFunctions: backendFunctionsResult.functions,
         warnings: backendFunctionsResult.warnings
       };

@@ -9,6 +9,7 @@ export {
 export {
   createNavaiBackendClient,
   type CreateNavaiBackendClientOptions,
+  type NavaiBackendSpeechConfig,
   type NavaiBackendClient
 } from "./backend";
 export {

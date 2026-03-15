@@ -15,6 +15,7 @@ Entrega un stack completo para:
 4. Carga dinamica de funciones locales.
 5. Parseo de tool calls realtime y emision de eventos de resultado.
 6. Ciclo de vida React para microfono, transporte y sesion.
+7. Reproduccion local opcional para salida hibrida con ElevenLabs.
 
 ## Instalacion
 
@@ -76,6 +77,7 @@ Flujo tipico con hook:
 - inicia sesion de voz mobile (client secret + connect del transporte).
 - construye runtime del agente mobile (instrucciones + tools).
 - envia `session.update` con tools e instrucciones.
+- cuando `speech.provider=elevenlabs`, la sesion se configura para recibir salida en texto y el hook puede sintetizar/reproducir audio localmente.
 5. Durante la conversacion:
 - se parsean eventos Realtime buscando tool calls.
 - se emiten resultados via `conversation.item.create` y `response.create`.
@@ -105,6 +107,8 @@ Tipos importantes:
 - `NavaiFunctionDefinition`
 - `NavaiRealtimeTransport`
 - `NavaiMobileVoiceSession`
+- `NavaiBackendSpeechConfig`
+- `NavaiMobileSpeechPlayer`
 - `ResolveNavaiMobileApplicationRuntimeConfigResult`
 - `UseMobileVoiceAgentTransportOptions`
 
@@ -200,6 +204,7 @@ Comportamiento fallback:
 `createNavaiMobileBackendClient` llama:
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
@@ -212,6 +217,8 @@ Prioridad de base URL:
 `listFunctions` retorna warnings en vez de lanzar en muchos errores de parseo/red.
 
 `createClientSecret` y `executeFunction` lanzan error cuando hay fallos de request o respuestas invalidas.
+
+`createClientSecret()` retorna `{ value, expires_at, speech }`, donde `speech.provider` puede ser `openai` o `elevenlabs`.
 
 ## Detalle del Orquestador de Sesion
 
@@ -256,6 +263,7 @@ Comportamiento de resiliencia:
 - deduplicacion de tool call ids ya procesados.
 - envio automatico de `session.update` despues de iniciar sesion.
 - `transportOptions` opcional para reenviar `rtcConfiguration`, `audioConstraints` y `remoteAudioTrackVolume`.
+- `speechPlayer` opcional para reproduccion local cuando el backend usa TTS hibrido con ElevenLabs.
 
 Estados del hook:
 
@@ -270,6 +278,15 @@ Estado de voz del agente expuesto por el hook:
 - `isAgentSpeaking`: `boolean`
 
 `agentVoiceState` se infiere desde eventos realtime de audio (`response.output_audio.delta`, `response.output_audio.done`, `output_audio_buffer.started`, `output_audio_buffer.stopped`, `response.done`).
+
+## Modo de voz hibrido
+
+Cuando el backend devuelve `speech.provider: "elevenlabs"`:
+
+- `useMobileVoiceAgent` actualiza la sesion Realtime para pedir `output_modalities: ["text"]`.
+- el texto final del asistente se envia a `backendClient.synthesizeSpeech(...)`.
+- el audio sintetizado se reproduce mediante el `speechPlayer` provisto por la app.
+- si no se pasa `speechPlayer`, el hook registra un warning y omite la reproduccion local.
 
 ## CLI de Generacion de Loaders
 
@@ -407,6 +424,7 @@ const voice = useMobileVoiceAgent({
 ## Rutas Backend Esperadas
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 

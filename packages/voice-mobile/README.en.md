@@ -15,6 +15,7 @@ It provides a complete mobile stack for:
 4. Local dynamic function loading.
 5. Realtime tool call parsing and result event emission.
 6. React hook lifecycle for microphone, transport, and session.
+7. Optional local speech playback for hybrid ElevenLabs output.
 
 ## Installation
 
@@ -76,6 +77,7 @@ Typical hook-driven flow:
 - starts mobile voice session (client secret + transport connect).
 - builds mobile agent runtime (instructions + tool schemas).
 - sends `session.update` event with tools and instructions.
+- when `speech.provider=elevenlabs`, the session is configured to receive text output and the hook can synthesize/play audio locally.
 5. During conversation:
 - incoming Realtime events are parsed for tool calls.
 - tool call outputs are emitted back via `conversation.item.create` and `response.create`.
@@ -105,6 +107,8 @@ Important types:
 - `NavaiFunctionDefinition`
 - `NavaiRealtimeTransport`
 - `NavaiMobileVoiceSession`
+- `NavaiBackendSpeechConfig`
+- `NavaiMobileSpeechPlayer`
 - `ResolveNavaiMobileApplicationRuntimeConfigResult`
 - `UseMobileVoiceAgentTransportOptions`
 
@@ -199,6 +203,7 @@ Fallback behavior:
 `createNavaiMobileBackendClient` calls:
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
@@ -211,6 +216,8 @@ Base URL priority:
 `listFunctions` returns warnings instead of throwing on most parse/network failures.
 
 `createClientSecret` and `executeFunction` throw on request failures or invalid responses.
+
+`createClientSecret()` returns `{ value, expires_at, speech }`, where `speech.provider` is `openai` or `elevenlabs`.
 
 ## Session Orchestrator Details
 
@@ -255,6 +262,7 @@ Resilience behavior:
 - dedup of handled tool call ids.
 - automatic `session.update` after session starts.
 - optional `transportOptions` passthrough for `rtcConfiguration`, `audioConstraints`, and `remoteAudioTrackVolume`.
+- optional `speechPlayer` for local playback when backend uses ElevenLabs hybrid TTS.
 
 Hook states:
 
@@ -269,6 +277,15 @@ Agent voice state exposed by the hook:
 - `isAgentSpeaking`: `boolean`
 
 `agentVoiceState` is inferred from realtime audio events (`response.output_audio.delta`, `response.output_audio.done`, `output_audio_buffer.started`, `output_audio_buffer.stopped`, `response.done`).
+
+## Hybrid Speech Mode
+
+When backend returns `speech.provider: "elevenlabs"`:
+
+- `useMobileVoiceAgent` updates the Realtime session to request `output_modalities: ["text"]`.
+- assistant final text is sent to `backendClient.synthesizeSpeech(...)`.
+- the synthesized audio is played through the app-provided `speechPlayer`.
+- if no `speechPlayer` is provided, the hook logs a warning and skips local playback.
 
 ## Generated Loader CLI
 
@@ -406,6 +423,7 @@ const voice = useMobileVoiceAgent({
 ## Expected Backend Routes
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 

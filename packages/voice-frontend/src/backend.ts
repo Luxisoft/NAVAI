@@ -16,9 +16,36 @@ type CreateClientSecretInput = {
   apiKey?: string;
 };
 
+export type NavaiSpeechProvider = "openai" | "elevenlabs";
+
+export type NavaiBackendSpeechConfig = {
+  provider: NavaiSpeechProvider;
+};
+
 type CreateClientSecretOutput = {
   value: string;
   expires_at?: number;
+  speech: NavaiBackendSpeechConfig;
+};
+
+export type SynthesizeSpeechInput = {
+  text: string;
+  voiceId?: string;
+  modelId?: string;
+  outputFormat?: string;
+  optimizeStreamingLatency?: number;
+  voiceSettings?: {
+    stability?: number;
+    similarityBoost?: number;
+    style?: number;
+    useSpeakerBoost?: boolean;
+  };
+};
+
+export type SynthesizeSpeechOutput = {
+  provider: "elevenlabs";
+  mimeType: string;
+  audioBase64: string;
 };
 
 type BackendFunctionsResult = {
@@ -33,10 +60,12 @@ export type CreateNavaiBackendClientOptions = {
   clientSecretPath?: string;
   functionsListPath?: string;
   functionsExecutePath?: string;
+  speechSynthesizePath?: string;
 };
 
 export type NavaiBackendClient = {
   createClientSecret: (input?: CreateClientSecretInput) => Promise<CreateClientSecretOutput>;
+  synthesizeSpeech: (input: SynthesizeSpeechInput) => Promise<SynthesizeSpeechOutput>;
   listFunctions: () => Promise<BackendFunctionsResult>;
   executeFunction: ExecuteNavaiBackendFunction;
 };
@@ -45,6 +74,7 @@ const DEFAULT_API_BASE_URL = "http://localhost:3000";
 const DEFAULT_CLIENT_SECRET_PATH = "/navai/realtime/client-secret";
 const DEFAULT_FUNCTIONS_LIST_PATH = "/navai/functions";
 const DEFAULT_FUNCTIONS_EXECUTE_PATH = "/navai/functions/execute";
+const DEFAULT_SPEECH_SYNTHESIZE_PATH = "/navai/speech/synthesize";
 
 function readOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -59,6 +89,14 @@ function joinUrl(baseUrl: string, path: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function readSpeechConfig(payload: unknown): NavaiBackendSpeechConfig {
+  if (isRecord(payload) && isRecord(payload.speech) && payload.speech.provider === "elevenlabs") {
+    return { provider: "elevenlabs" };
+  }
+
+  return { provider: "openai" };
 }
 
 async function readTextSafe(response: Response): Promise<string> {
@@ -83,6 +121,7 @@ export function createNavaiBackendClient(options: CreateNavaiBackendClientOption
   const clientSecretUrl = joinUrl(apiBaseUrl, options.clientSecretPath ?? DEFAULT_CLIENT_SECRET_PATH);
   const functionsListUrl = joinUrl(apiBaseUrl, options.functionsListPath ?? DEFAULT_FUNCTIONS_LIST_PATH);
   const functionsExecuteUrl = joinUrl(apiBaseUrl, options.functionsExecutePath ?? DEFAULT_FUNCTIONS_EXECUTE_PATH);
+  const speechSynthesizeUrl = joinUrl(apiBaseUrl, options.speechSynthesizePath ?? DEFAULT_SPEECH_SYNTHESIZE_PATH);
 
   async function createClientSecret(input: CreateClientSecretInput = {}): Promise<CreateClientSecretOutput> {
     const response = await fetchImpl(clientSecretUrl, {
@@ -102,7 +141,36 @@ export function createNavaiBackendClient(options: CreateNavaiBackendClientOption
 
     return {
       value: payload.value,
-      expires_at: typeof payload.expires_at === "number" ? payload.expires_at : undefined
+      expires_at: typeof payload.expires_at === "number" ? payload.expires_at : undefined,
+      speech: readSpeechConfig(payload)
+    };
+  }
+
+  async function synthesizeSpeech(input: SynthesizeSpeechInput): Promise<SynthesizeSpeechOutput> {
+    const response = await fetchImpl(speechSynthesizeUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    });
+
+    if (!response.ok) {
+      throw new Error(await readTextSafe(response));
+    }
+
+    const payload = await readJsonSafe(response);
+    if (
+      !isRecord(payload) ||
+      payload.provider !== "elevenlabs" ||
+      typeof payload.mimeType !== "string" ||
+      typeof payload.audioBase64 !== "string"
+    ) {
+      throw new Error("Invalid speech synthesis response.");
+    }
+
+    return {
+      provider: "elevenlabs",
+      mimeType: payload.mimeType,
+      audioBase64: payload.audioBase64
     };
   }
 
@@ -181,6 +249,7 @@ export function createNavaiBackendClient(options: CreateNavaiBackendClientOption
 
   return {
     createClientSecret,
+    synthesizeSpeech,
     listFunctions,
     executeFunction
   };

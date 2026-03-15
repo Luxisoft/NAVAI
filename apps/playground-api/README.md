@@ -45,6 +45,9 @@ Copy-Item .env.example .env
 ```env
 OPENAI_API_KEY=sk-...
 OPENAI_REALTIME_MODEL=gpt-realtime
+NAVAI_TTS_PROVIDER=openai
+ELEVENLABS_API_KEY=el-...
+ELEVENLABS_VOICE_ID=voice_...
 NAVAI_FUNCTIONS_FOLDERS=src/ai/...
 NAVAI_CORS_ORIGIN=http://localhost:5173,http://localhost:5174
 PORT=3000
@@ -108,6 +111,17 @@ Notas:
 - `OPENAI_REALTIME_VOICE_ACCENT`: acento de voz (se inyecta en instrucciones).
 - `OPENAI_REALTIME_VOICE_TONE`: tono de voz (se inyecta en instrucciones).
 - `OPENAI_REALTIME_CLIENT_SECRET_TTL`: segundos (`10-7200`).
+- `NAVAI_TTS_PROVIDER`: `openai|elevenlabs`. Usa `elevenlabs` para activar el modo hibrido.
+- `ELEVENLABS_API_KEY`: key de ElevenLabs para sintesis.
+- `ELEVENLABS_BASE_URL`: default `https://api.elevenlabs.io`.
+- `ELEVENLABS_VOICE_ID`: voz obligatoria cuando `NAVAI_TTS_PROVIDER=elevenlabs`.
+- `ELEVENLABS_MODEL_ID`: modelo TTS opcional.
+- `ELEVENLABS_OUTPUT_FORMAT`: default `mp3_44100_128`.
+- `ELEVENLABS_OPTIMIZE_STREAMING_LATENCY`: entero `0-4`.
+- `ELEVENLABS_STABILITY`: float `0-1`.
+- `ELEVENLABS_SIMILARITY_BOOST`: float `0-1`.
+- `ELEVENLABS_STYLE`: float `0-1`.
+- `ELEVENLABS_USE_SPEAKER_BOOST`: `true|false`.
 - `NAVAI_FUNCTIONS_FOLDERS`: rutas para auto-cargar funciones backend (CSV, `...`, `*`).
 - `NAVAI_FUNCTIONS_BASE_DIR`: base dir opcional para resolver rutas de funciones.
 - `NAVAI_CORS_ORIGIN`: origenes CORS permitidos (CSV).

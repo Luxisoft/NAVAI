@@ -23,12 +23,16 @@ export {
   createNavaiMobileBackendClient,
   type BackendFunctionsResult,
   type CreateNavaiMobileBackendClientOptions,
+  type NavaiBackendSpeechConfig,
   type CreateRealtimeClientSecretInput,
   type CreateRealtimeClientSecretResult,
   type ExecuteNavaiBackendFunctionInput,
   type NavaiBackendFunctionDefinition,
   type NavaiMobileBackendClient,
-  type NavaiMobileEnv
+  type NavaiMobileEnv,
+  type NavaiSpeechProvider,
+  type SynthesizeSpeechInput,
+  type SynthesizeSpeechResult
 } from "./backend";
 export {
   getNavaiRoutePromptLines,
@@ -74,6 +78,7 @@ export {
 } from "./transport";
 export {
   useMobileVoiceAgent,
+  type NavaiMobileSpeechPlayer,
   type UseMobileVoiceAgentOptions,
   type UseMobileVoiceAgentTransportOptions,
   type UseMobileVoiceAgentResult

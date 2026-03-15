@@ -678,6 +678,10 @@
     return headers;
   }
 
+  function normalizeSpeechProvider(value) {
+    return asTrimmedString(value).toLowerCase() === "elevenlabs" ? "elevenlabs" : "openai";
+  }
+
   async function requestClientSecret(config, input) {
     var restBase = asTrimmedString(config.restBaseUrl);
     if (!restBase) {
@@ -708,7 +712,46 @@
     return {
       value: payload.value,
       expiresAt: typeof payload.expires_at === "number" ? payload.expires_at : null,
-      session: isRecord(payload.session) ? payload.session : null
+      session: isRecord(payload.session) ? payload.session : null,
+      speech: isRecord(payload.speech)
+        ? {
+            provider: normalizeSpeechProvider(payload.speech.provider)
+          }
+        : null
+    };
+  }
+
+  async function requestSpeechSynthesis(config, input) {
+    var restBase = asTrimmedString(config.restBaseUrl);
+    if (!restBase) {
+      throw new Error("Missing restBaseUrl in NAVAI_VOICE_CONFIG.");
+    }
+
+    var response = await fetch(joinUrl(restBase, "/speech/synthesize"), {
+      method: "POST",
+      headers: buildWpHeaders(config),
+      body: safeJsonStringify(input || {})
+    });
+
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response));
+    }
+
+    var payload = null;
+    try {
+      payload = await response.json();
+    } catch (_error) {
+      payload = null;
+    }
+
+    if (!isRecord(payload) || typeof payload.audioBase64 !== "string" || payload.audioBase64.trim() === "") {
+      throw new Error("Invalid speech synthesis response.");
+    }
+
+    return {
+      provider: normalizeSpeechProvider(payload.provider),
+      mimeType: asTrimmedString(payload.mimeType) || "audio/mpeg",
+      audioBase64: payload.audioBase64
     };
   }
 
@@ -962,7 +1005,9 @@
   runtime.buildAssistantInstructions = buildAssistantInstructions;
   runtime.readErrorMessage = readErrorMessage;
   runtime.buildWpHeaders = buildWpHeaders;
+  runtime.normalizeSpeechProvider = normalizeSpeechProvider;
   runtime.requestClientSecret = requestClientSecret;
+  runtime.requestSpeechSynthesis = requestSpeechSynthesis;
   runtime.requestBackendFunctions = requestBackendFunctions;
   runtime.requestRoutes = requestRoutes;
   runtime.executeBackendFunction = executeBackendFunction;

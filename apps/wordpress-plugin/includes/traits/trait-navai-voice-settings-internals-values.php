@@ -575,8 +575,153 @@ trait Navai_Voice_Settings_Internals_Values_Trait
     }
 
     /**
-     * @param array<string, mixed>|null $settingsOverride
      * @return array<string, mixed>
      */
+    private function apply_environment_overrides(array $settings): array
+    {
+        $stringOverrides = [
+            'OPENAI_API_KEY' => ['key' => 'openai_api_key', 'multiline' => false],
+            'OPENAI_REALTIME_MODEL' => ['key' => 'default_model', 'multiline' => false],
+            'OPENAI_REALTIME_VOICE' => ['key' => 'default_voice', 'multiline' => false],
+            'OPENAI_REALTIME_INSTRUCTIONS' => ['key' => 'default_instructions', 'multiline' => true],
+            'OPENAI_REALTIME_LANGUAGE' => ['key' => 'default_language', 'multiline' => false],
+            'OPENAI_REALTIME_VOICE_ACCENT' => ['key' => 'default_voice_accent', 'multiline' => false],
+            'OPENAI_REALTIME_VOICE_TONE' => ['key' => 'default_voice_tone', 'multiline' => false],
+            'NAVAI_TTS_PROVIDER' => ['key' => 'tts_provider', 'multiline' => false],
+            'ELEVENLABS_API_KEY' => ['key' => 'elevenlabs_api_key', 'multiline' => false],
+            'ELEVENLABS_BASE_URL' => ['key' => 'elevenlabs_base_url', 'multiline' => false],
+            'ELEVENLABS_VOICE_ID' => ['key' => 'elevenlabs_voice_id', 'multiline' => false],
+            'ELEVENLABS_MODEL_ID' => ['key' => 'elevenlabs_model_id', 'multiline' => false],
+            'ELEVENLABS_OUTPUT_FORMAT' => ['key' => 'elevenlabs_output_format', 'multiline' => false],
+        ];
+
+        foreach ($stringOverrides as $envKey => $meta) {
+            $override = $this->read_environment_override($envKey);
+            if ($override === null) {
+                continue;
+            }
+
+            $clean = !empty($meta['multiline'])
+                ? sanitize_textarea_field((string) $override)
+                : sanitize_text_field((string) $override);
+            if (trim($clean) === '') {
+                continue;
+            }
+
+            $settings[(string) $meta['key']] = $clean;
+        }
+
+        $ttlOverride = $this->read_environment_override('OPENAI_REALTIME_CLIENT_SECRET_TTL');
+        if ($ttlOverride !== null) {
+            $settings['client_secret_ttl'] = $this->sanitize_int_range_value(
+                $ttlOverride,
+                (int) ($settings['client_secret_ttl'] ?? 600),
+                10,
+                7200
+            );
+        }
+
+        $optimizeLatencyOverride = $this->read_environment_override('ELEVENLABS_OPTIMIZE_STREAMING_LATENCY');
+        if ($optimizeLatencyOverride !== null) {
+            $settings['elevenlabs_optimize_streaming_latency'] = $this->sanitize_int_range_value(
+                $optimizeLatencyOverride,
+                (int) ($settings['elevenlabs_optimize_streaming_latency'] ?? 0),
+                0,
+                4
+            );
+        }
+
+        $floatOverrides = [
+            'ELEVENLABS_STABILITY' => ['key' => 'elevenlabs_stability', 'min' => 0.0, 'max' => 1.0, 'precision' => 2],
+            'ELEVENLABS_SIMILARITY_BOOST' => ['key' => 'elevenlabs_similarity_boost', 'min' => 0.0, 'max' => 1.0, 'precision' => 2],
+            'ELEVENLABS_STYLE' => ['key' => 'elevenlabs_style', 'min' => 0.0, 'max' => 1.0, 'precision' => 2],
+        ];
+
+        foreach ($floatOverrides as $envKey => $meta) {
+            $override = $this->read_environment_override($envKey);
+            if ($override === null) {
+                continue;
+            }
+
+            $settings[(string) $meta['key']] = $this->sanitize_float_range_value(
+                $override,
+                (float) ($settings[(string) $meta['key']] ?? 0.0),
+                (float) $meta['min'],
+                (float) $meta['max'],
+                (int) $meta['precision']
+            );
+        }
+
+        $speakerBoostOverride = $this->parse_environment_bool($this->read_environment_override('ELEVENLABS_USE_SPEAKER_BOOST'));
+        if ($speakerBoostOverride !== null) {
+            $settings['elevenlabs_use_speaker_boost'] = $speakerBoostOverride;
+        }
+
+        $settings['tts_provider'] = $this->sanitize_tts_provider($settings['tts_provider'] ?? 'openai');
+
+        return $settings;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function sanitize_tts_provider($value): string
+    {
+        return sanitize_key((string) $value) === 'elevenlabs' ? 'elevenlabs' : 'openai';
+    }
+
+    /**
+     * @return mixed
+     */
+    private function read_environment_override(string $key)
+    {
+        if (defined($key)) {
+            return constant($key);
+        }
+
+        $value = getenv($key);
+        if ($value !== false) {
+            return $value;
+        }
+
+        if (isset($_ENV[$key])) {
+            return $_ENV[$key];
+        }
+
+        if (isset($_SERVER[$key])) {
+            return $_SERVER[$key];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private function parse_environment_bool($value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return ((int) $value) === 1;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
+            return false;
+        }
+
+        return null;
+    }
 }
 

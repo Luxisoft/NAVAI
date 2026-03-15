@@ -17,7 +17,7 @@
   <img alt="OpenAI Realtime" src="https://img.shields.io/badge/OpenAI-Realtime-0B8F6A?style=for-the-badge">
 </p>
 
-NAVAI Voice es un plugin para WordPress que agrega un widget de voz usando OpenAI Realtime y un panel de administracion para controlar rutas de navegacion, funciones personalizadas y configuracion del runtime sin usar Node.js.
+NAVAI Voice es un plugin para WordPress que agrega un widget de voz usando OpenAI Realtime, con TTS hibrido opcional mediante ElevenLabs, y un panel de administracion para controlar rutas de navegacion, funciones personalizadas y configuracion del runtime sin usar Node.js.
 
 El plugin esta implementado en PHP (servidor) y JavaScript vanilla (navegador) para facilitar el despliegue en WordPress.
 
@@ -97,6 +97,7 @@ Esto sirve para evitar que NAVAI ejecute acciones destructivas en funciones back
 ## Que puede hacer actualmente el plugin
 
 - Agregar un widget de voz a WordPress usando OpenAI Realtime (WebRTC).
+- Mantener OpenAI Realtime para microfono/tools y sintetizar la voz final del asistente con ElevenLabs cuando el modo hibrido esta activo.
 - Trabajar en dos modos de visualizacion:
   - Boton global flotante
   - Shortcode manual (`[navai_voice]`)
@@ -207,13 +208,17 @@ Controles extra en la cabecera:
    - `OpenAI API Key`
    - `Modelo Realtime` (default: `gpt-realtime`)
    - `Voz` (default: `marin`)
-3. Elige modo de widget:
+3. Opcional: TTS hibrido con ElevenLabs:
+   - define `NAVAI_TTS_PROVIDER=elevenlabs` como variable de entorno o constante PHP
+   - configura `ELEVENLABS_API_KEY` y `ELEVENLABS_VOICE_ID`
+   - overrides opcionales: `ELEVENLABS_BASE_URL`, `ELEVENLABS_MODEL_ID`, `ELEVENLABS_OUTPUT_FORMAT`, `ELEVENLABS_OPTIMIZE_STREAMING_LATENCY`, `ELEVENLABS_STABILITY`, `ELEVENLABS_SIMILARITY_BOOST`, `ELEVENLABS_STYLE`, `ELEVENLABS_USE_SPEAKER_BOOST`
+4. Elige modo de widget:
    - `Boton global flotante` (recomendado para iniciar rapido)
    - `Solo shortcode manual`
-4. Configura visibilidad:
+5. Configura visibilidad:
    - Selecciona que roles pueden ver el widget (y si invitados estan permitidos)
-5. Si necesitas tools backend para visitantes, activa manualmente `Permitir funciones backend publicas` en `Ajustes`.
-6. Click en `Guardar cambios`.
+6. Si necesitas tools backend para visitantes, activa manualmente `Permitir funciones backend publicas` en `Ajustes`.
+7. Click en `Guardar cambios`.
 
 ## Como usar el plugin
 
@@ -603,6 +608,7 @@ Compatibilidad implementada en el plugin:
 El plugin registra estas rutas REST:
 
 - `POST /wp-json/navai/v1/realtime/client-secret`
+- `POST /wp-json/navai/v1/speech/synthesize`
 - `GET /wp-json/navai/v1/functions`
 - `GET /wp-json/navai/v1/routes`
 - `POST /wp-json/navai/v1/functions/execute`
@@ -712,6 +718,7 @@ add_filter('navai_voice_frontend_config', function (array $config, array $settin
 ## Servicios de terceros y privacidad
 
 - `OpenAI Realtime`: NAVAI Voice envia audio/texto a OpenAI cuando un usuario inicia una sesion realtime o cuando un administrador ejecuta pruebas o configuraciones relacionadas.
+- `ElevenLabs opcional`: cuando la voz hibrida esta activa, NAVAI Voice envia el texto final del asistente a ElevenLabs mediante el proxy server-side de sintesis.
 - `Servidores MCP opcionales`: NAVAI Voice puede enviar payloads de tools a endpoints MCP de terceros solo cuando un administrador habilita MCP y configura esos servidores.
 - En instalaciones nuevas, el plugin queda por defecto con:
   - funciones backend publicas desactivadas
@@ -723,6 +730,7 @@ add_filter('navai_voice_frontend_config', function (array $config, array $settin
 ## Notas de seguridad
 
 - La API key de OpenAI permanece en el servidor.
+- La API key de ElevenLabs tambien permanece en el servidor.
 - Si `Permitir client_secret publico` esta desactivado, solo admins pueden solicitar client secret.
 - Si `Permitir funciones backend publicas` esta desactivado, solo admins pueden listar/ejecutar funciones backend.
 - `Seguridad` (Fase 1) permite bloquear llamadas por `input`, `tool` y `output` antes/despues de `functions/execute`.

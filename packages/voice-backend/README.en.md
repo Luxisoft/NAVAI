@@ -7,10 +7,11 @@
 
 Backend package for Navai voice applications.
 
-This package solves two backend responsibilities:
+This package solves three backend responsibilities:
 
 1. Mint secure ephemeral `client_secret` tokens for OpenAI Realtime.
-2. Discover, validate, expose, and execute backend tools from your codebase.
+2. Proxy optional ElevenLabs speech synthesis for hybrid voice output.
+3. Discover, validate, expose, and execute backend tools from your codebase.
 
 ## Installation
 
@@ -38,9 +39,10 @@ End-to-end request flow:
 1. Frontend/mobile calls `POST /navai/realtime/client-secret`.
 2. Backend validates options and API key policy.
 3. Backend calls OpenAI `POST https://api.openai.com/v1/realtime/client_secrets`.
-4. Frontend/mobile calls `GET /navai/functions` to discover allowed tools.
-5. Agent calls `POST /navai/functions/execute` with `function_name` and `payload`.
-6. Backend executes only tool names loaded in the registry.
+4. When `speech.provider=elevenlabs`, frontend/mobile later calls `POST /navai/speech/synthesize` with final assistant text.
+5. Frontend/mobile calls `GET /navai/functions` to discover allowed tools.
+6. Agent calls `POST /navai/functions/execute` with `function_name` and `payload`.
+7. Backend executes only tool names loaded in the registry.
 
 Note about agent voice state:
 
@@ -54,6 +56,7 @@ Client secret helpers:
 - `getNavaiVoiceBackendOptionsFromEnv(env?)`
 - `createRealtimeClientSecret(options, request?)`
 - `createExpressClientSecretHandler(options)`
+- `synthesizeSpeech(options, request?)`
 
 Express integration:
 
@@ -68,6 +71,10 @@ Key exported types:
 
 - `NavaiVoiceBackendOptions`
 - `CreateClientSecretRequest`
+- `OpenAIRealtimeClientSecretResponse`
+- `SynthesizeSpeechRequest`
+- `SynthesizeSpeechResponse`
+- `NavaiSpeechProvider`
 - `ResolveNavaiBackendRuntimeConfigOptions`
 - `NavaiFunctionDefinition`
 - `NavaiFunctionModuleLoaders`
@@ -78,12 +85,14 @@ Key exported types:
 `registerNavaiExpressRoutes` registers these routes by default:
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
 Custom route paths are supported with:
 
 - `clientSecretPath`
+- `speechSynthesizePath`
 - `functionsListPath`
 - `functionsExecutePath`
 
@@ -111,10 +120,12 @@ Important runtime detail:
 - `model` default: `gpt-realtime`
 - `voice` default: `marin`
 - `instructions` include base instructions plus optional language/accent/tone lines.
+- when `NAVAI_TTS_PROVIDER=elevenlabs`, backend requests text-only Realtime output with `output_modalities: ["text"]`.
 
 4. Calls OpenAI Realtime client secret endpoint and returns:
 - `value`
 - `expires_at`
+- `speech.provider`
 
 Request body accepted by route:
 
@@ -135,7 +146,30 @@ Response:
 ```json
 {
   "value": "ek_...",
-  "expires_at": 1730000000
+  "expires_at": 1730000000,
+  "speech": {
+    "provider": "elevenlabs"
+  }
+}
+```
+
+Speech synthesis request body:
+
+```json
+{
+  "text": "Hello, I am NAVAI.",
+  "voiceId": "voice_id_optional",
+  "modelId": "model_id_optional"
+}
+```
+
+Speech synthesis response:
+
+```json
+{
+  "provider": "elevenlabs",
+  "mimeType": "audio/mpeg",
+  "audioBase64": "SUQz..."
 }
 ```
 
@@ -258,6 +292,17 @@ Main env keys:
 - `OPENAI_REALTIME_VOICE_ACCENT`
 - `OPENAI_REALTIME_VOICE_TONE`
 - `OPENAI_REALTIME_CLIENT_SECRET_TTL`
+- `NAVAI_TTS_PROVIDER`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_BASE_URL`
+- `ELEVENLABS_VOICE_ID`
+- `ELEVENLABS_MODEL_ID`
+- `ELEVENLABS_OUTPUT_FORMAT`
+- `ELEVENLABS_OPTIMIZE_STREAMING_LATENCY`
+- `ELEVENLABS_STABILITY`
+- `ELEVENLABS_SIMILARITY_BOOST`
+- `ELEVENLABS_STYLE`
+- `ELEVENLABS_USE_SPEAKER_BOOST`
 - `NAVAI_ALLOW_FRONTEND_API_KEY`
 - `NAVAI_FUNCTIONS_FOLDERS`
 - `NAVAI_FUNCTIONS_BASE_DIR`
@@ -293,6 +338,7 @@ app.listen(3000);
 Production recommendations:
 
 - keep `OPENAI_API_KEY` only on server.
+- keep `ELEVENLABS_API_KEY` only on server.
 - keep `NAVAI_ALLOW_FRONTEND_API_KEY=false` in production.
 - whitelist CORS origins at app layer.
 - monitor and surface `warnings` from both runtime and registry.

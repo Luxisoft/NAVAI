@@ -18,7 +18,7 @@
   <a href="../../packages/voice-mobile/README.md"><img alt="Voice Mobile Docs" src="https://img.shields.io/badge/Voice%20Mobile-Docs-0B8F6A?style=for-the-badge"></a>
 </p>
 
-Sample React frontend for voice-first navigation with OpenAI Realtime.
+Sample React frontend for voice-first navigation with OpenAI Realtime and optional hybrid ElevenLabs TTS.
 
 This playground no longer uses `src/ai/functions-modules`. The active structure is `src/ai/<agent>/...`.
 
@@ -108,6 +108,12 @@ Shortcut: `npm run dev` from root starts both apps.
 3. The hook resolves frontend runtime (routes + local functions) with `resolveNavaiFrontendRuntimeConfig`.
 4. The hook builds a primary agent + specialists with `buildNavaiAgent` and connects `RealtimeSession`.
 
+If backend `playground-api` uses `NAVAI_TTS_PROVIDER=elevenlabs`:
+
+- the realtime session still uses OpenAI for microphone, tools, and orchestration.
+- `useWebVoiceAgent` switches assistant output to text.
+- final assistant speech is played locally from `POST /navai/speech/synthesize`.
+
 In web realtime, the current multi-agent delegation uses `handoffs` between `RealtimeAgent` instances.
 
 When the agent calls `execute_app_function`:
@@ -130,6 +136,8 @@ This playground `VoiceNavigator` already uses these values to change text, butto
 - `NAVAI_AGENTS_FOLDERS`: CSV with allowed agents and the primary agent first.
 
 In this playground, `NAVAI_FUNCTIONS_FOLDERS` and `NAVAI_ROUTES_FILE` are no longer required because the sample pins `src/ai` and `src/ai/routes.ts`.
+
+`NAVAI_TTS_PROVIDER` and `ELEVENLABS_*` live in `@navai/playground-api`, not in this frontend.
 
 To force another URL at runtime, pass `apiBaseUrl` to the component:
 

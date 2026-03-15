@@ -8,7 +8,11 @@ import {
   type NavaiMobileAgentRuntime,
   type NavaiRealtimeToolCall
 } from "./agent";
-import { createNavaiMobileBackendClient } from "./backend";
+import {
+  createNavaiMobileBackendClient,
+  type NavaiSpeechProvider,
+  type SynthesizeSpeechResult
+} from "./backend";
 import { loadNavaiFunctions, type NavaiFunctionsRegistry } from "./functions";
 import {
   createReactNativeWebRtcTransport,
@@ -29,6 +33,12 @@ type WebRtcRuntime = {
 };
 
 type PendingToolCall = NavaiRealtimeToolCall & { name: string };
+type AssistantTextPayload = { key: string; text: string };
+
+export type NavaiMobileSpeechPlayer = {
+  play: (input: SynthesizeSpeechResult) => Promise<void>;
+  stop?: () => Promise<void> | void;
+};
 
 export type UseMobileVoiceAgentTransportOptions = Pick<
   CreateReactNativeWebRtcTransportOptions,
@@ -41,6 +51,7 @@ export type UseMobileVoiceAgentOptions = {
   runtimeError: string | null;
   navigate: (path: string) => void;
   transportOptions?: UseMobileVoiceAgentTransportOptions;
+  speechPlayer?: NavaiMobileSpeechPlayer;
 };
 
 export type UseMobileVoiceAgentResult = {
@@ -179,9 +190,104 @@ function readRealtimeEventType(event: unknown): string {
   return event.type.trim().toLowerCase();
 }
 
-function resolveAgentVoiceStateFromRealtimeEvent(event: unknown): AgentVoiceState | null {
+function readAssistantTextFromResponseOutput(items: unknown[]): string {
+  const parts: string[] = [];
+
+  for (const item of items) {
+    if (!isRecord(item) || item.type !== "message" || item.role !== "assistant") {
+      continue;
+    }
+
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const chunk of content) {
+      if (!isRecord(chunk)) {
+        continue;
+      }
+
+      const text =
+        chunk.type === "output_text"
+          ? typeof chunk.text === "string"
+            ? chunk.text
+            : ""
+          : chunk.type === "output_audio"
+            ? typeof chunk.transcript === "string"
+              ? chunk.transcript
+              : ""
+            : "";
+      const normalized = text.trim();
+      if (normalized) {
+        parts.push(normalized);
+      }
+    }
+  }
+
+  return parts.join("\n").trim();
+}
+
+function extractAssistantTextFromRealtimeEvent(event: unknown): AssistantTextPayload | null {
+  if (!isRecord(event)) {
+    return null;
+  }
+
+  const eventType = readRealtimeEventType(event);
+  if (
+    eventType === "response.output_text.done" ||
+    eventType === "response.text.done" ||
+    eventType === "response.audio_transcript.done"
+  ) {
+    const text =
+      typeof event.text === "string"
+        ? event.text.trim()
+        : typeof event.transcript === "string"
+          ? event.transcript.trim()
+          : "";
+    if (!text) {
+      return null;
+    }
+
+    const key = [
+      eventType,
+      typeof event.response_id === "string" ? event.response_id : "",
+      typeof event.item_id === "string" ? event.item_id : ""
+    ]
+      .filter(Boolean)
+      .join(":");
+
+    return { key: key || `${eventType}:${text}`, text };
+  }
+
+  if (eventType === "response.done" && isRecord(event.response) && Array.isArray(event.response.output)) {
+    const text = readAssistantTextFromResponseOutput(event.response.output);
+    if (!text) {
+      return null;
+    }
+
+    const responseId = typeof event.response.id === "string" ? event.response.id : "";
+    return { key: responseId ? `response.done:${responseId}` : `response.done:${text}`, text };
+  }
+
+  return null;
+}
+
+function resolveAgentVoiceStateFromRealtimeEvent(
+  event: unknown,
+  speechProvider: NavaiSpeechProvider
+): AgentVoiceState | null {
   const eventType = readRealtimeEventType(event);
   if (!eventType) {
+    return null;
+  }
+
+  if (speechProvider === "elevenlabs") {
+    if (
+      eventType === "response.canceled" ||
+      eventType === "response.cancelled" ||
+      eventType === "conversation.interrupted" ||
+      eventType === "error"
+    ) {
+      return "idle";
+    }
+
     return null;
   }
 
@@ -217,12 +323,25 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
   const [functionsReady, setFunctionsReady] = useState(false);
 
   const webRtc = useMemo(loadWebRtcRuntime, []);
+  const backendClient = useMemo(
+    () =>
+      options.runtime
+        ? createNavaiMobileBackendClient({
+            apiBaseUrl: options.runtime.apiBaseUrl,
+            env: options.runtime.env
+          })
+        : null,
+    [options.runtime]
+  );
   const sessionRef = useRef<NavaiMobileVoiceSession | null>(null);
   const agentRuntimeRef = useRef<NavaiMobileAgentRuntime | null>(null);
   const frontendRegistryRef = useRef<NavaiFunctionsRegistry | null>(null);
   const handledToolCallIdsRef = useRef<Set<string>>(new Set());
   const toolCallNamesByIdRef = useRef<Map<string, string>>(new Map());
   const pendingToolCallsRef = useRef<Map<string, PendingToolCall>>(new Map());
+  const speechProviderRef = useRef<NavaiSpeechProvider>("openai");
+  const spokenAssistantKeysRef = useRef<Set<string>>(new Set());
+  const speechPlaybackGenerationRef = useRef(0);
 
   const setAgentVoiceStateIfChanged = useCallback((next: AgentVoiceState) => {
     setAgentVoiceState((current) => (current === next ? current : next));
@@ -234,7 +353,73 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
     handledToolCallIdsRef.current.clear();
     toolCallNamesByIdRef.current.clear();
     pendingToolCallsRef.current.clear();
+    spokenAssistantKeysRef.current.clear();
+    speechProviderRef.current = "openai";
+    speechPlaybackGenerationRef.current += 1;
   }, []);
+
+  const stopSpeechPlayback = useCallback(
+    (input?: { invalidate?: boolean; resetState?: boolean }) => {
+      if (input?.invalidate) {
+        speechPlaybackGenerationRef.current += 1;
+      }
+
+      if (typeof input?.resetState === "undefined" || input.resetState) {
+        setAgentVoiceStateIfChanged("idle");
+      }
+
+      void Promise.resolve(options.speechPlayer?.stop?.());
+    },
+    [options.speechPlayer, setAgentVoiceStateIfChanged]
+  );
+
+  const playAssistantSpeech = useCallback(
+    async (text: string): Promise<void> => {
+      if (speechProviderRef.current !== "elevenlabs") {
+        return;
+      }
+
+      const normalized = text.trim();
+      if (!normalized) {
+        return;
+      }
+
+      if (!backendClient) {
+        setError("Speech backend client is not available.");
+        setAgentVoiceStateIfChanged("idle");
+        return;
+      }
+
+      if (!options.speechPlayer) {
+        console.warn("[navai] ElevenLabs speech is enabled but no mobile speechPlayer was provided.");
+        setAgentVoiceStateIfChanged("idle");
+        return;
+      }
+
+      const generation = speechPlaybackGenerationRef.current + 1;
+      speechPlaybackGenerationRef.current = generation;
+      await Promise.resolve(options.speechPlayer.stop?.());
+      setAgentVoiceStateIfChanged("speaking");
+
+      try {
+        const synthesized = await backendClient.synthesizeSpeech({ text: normalized });
+        if (speechProviderRef.current !== "elevenlabs" || speechPlaybackGenerationRef.current !== generation) {
+          return;
+        }
+
+        await options.speechPlayer.play(synthesized);
+      } catch (speechError) {
+        if (speechPlaybackGenerationRef.current === generation) {
+          setError(formatError(speechError));
+        }
+      } finally {
+        if (speechPlaybackGenerationRef.current === generation) {
+          setAgentVoiceStateIfChanged("idle");
+        }
+      }
+    },
+    [backendClient, options.speechPlayer, setAgentVoiceStateIfChanged]
+  );
 
   const handleRealtimeToolCall = useCallback(async (call: PendingToolCall): Promise<void> => {
     if (handledToolCallIdsRef.current.has(call.callId)) {
@@ -281,9 +466,26 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
 
   const handleRealtimeEvent = useCallback(
     (event: unknown) => {
-      const nextVoiceState = resolveAgentVoiceStateFromRealtimeEvent(event);
+      const eventType = readRealtimeEventType(event);
+      if (
+        speechProviderRef.current === "elevenlabs" &&
+        (eventType === "input_audio_buffer.speech_started" ||
+          eventType === "conversation.item.input_audio_transcription.started")
+      ) {
+        stopSpeechPlayback({ invalidate: true, resetState: true });
+      }
+
+      const nextVoiceState = resolveAgentVoiceStateFromRealtimeEvent(event, speechProviderRef.current);
       if (nextVoiceState) {
         setAgentVoiceStateIfChanged(nextVoiceState);
+      }
+
+      if (speechProviderRef.current === "elevenlabs") {
+        const assistantText = extractAssistantTextFromRealtimeEvent(event);
+        if (assistantText && !spokenAssistantKeysRef.current.has(assistantText.key)) {
+          spokenAssistantKeysRef.current.add(assistantText.key);
+          void playAssistantSpeech(assistantText.text);
+        }
       }
 
       for (const descriptor of readToolCallDescriptors(event)) {
@@ -302,7 +504,7 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
         });
       }
     },
-    [handleRealtimeToolCall, setAgentVoiceStateIfChanged]
+    [handleRealtimeToolCall, playAssistantSpeech, setAgentVoiceStateIfChanged, stopSpeechPlayback]
   );
 
   useEffect(() => {
@@ -344,9 +546,10 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
   useEffect(() => {
     return () => {
       void sessionRef.current?.stop();
+      stopSpeechPlayback({ invalidate: true, resetState: true });
       resetSessionState();
     };
-  }, [resetSessionState]);
+  }, [resetSessionState, stopSpeechPlayback]);
 
   const start = useCallback(async (): Promise<void> => {
     if (status === "connecting" || status === "connected") {
@@ -388,19 +591,25 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
       return;
     }
 
+    if (!backendClient) {
+      setError("Backend client is not available.");
+      setStatus("error");
+      return;
+    }
+
     setStatus("connecting");
     handledToolCallIdsRef.current.clear();
     toolCallNamesByIdRef.current.clear();
     pendingToolCallsRef.current.clear();
+    spokenAssistantKeysRef.current.clear();
+    speechProviderRef.current = "openai";
+    stopSpeechPlayback({ invalidate: true, resetState: true });
 
     try {
       await ensureMicrophonePermission();
 
       const session = createNavaiMobileVoiceSession({
-        backendClient: createNavaiMobileBackendClient({
-          apiBaseUrl: runtime.apiBaseUrl,
-          env: runtime.env
-        }),
+        backendClient,
         transport: createReactNativeWebRtcTransport({
           globals: {
             mediaDevices: webRtc.runtime.mediaDevices,
@@ -416,6 +625,7 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
         onRealtimeError: (nextError) => {
           setError(formatError(nextError));
           setStatus("error");
+          stopSpeechPlayback({ invalidate: true, resetState: true });
           setAgentVoiceStateIfChanged("idle");
         }
       });
@@ -424,6 +634,8 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
       const response = await session.start({
         model: runtime.modelOverride || undefined
       });
+      speechProviderRef.current = response.speech.provider;
+      spokenAssistantKeysRef.current.clear();
 
       const agentRuntime = createNavaiMobileAgentRuntime({
         navigate: options.navigate,
@@ -450,7 +662,8 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
           type: "realtime",
           instructions: agentRuntime.session.instructions,
           tools: agentRuntime.session.tools,
-          tool_choice: "auto"
+          tool_choice: "auto",
+          ...(response.speech.provider === "elevenlabs" ? { output_modalities: ["text"] } : {})
         }
       });
 
@@ -458,6 +671,7 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
     } catch (nextError) {
       setError(formatError(nextError));
       setStatus("error");
+      stopSpeechPlayback({ invalidate: true, resetState: true });
       setAgentVoiceStateIfChanged("idle");
 
       try {
@@ -470,16 +684,19 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
     }
   }, [
     functionsReady,
+    backendClient,
     handleRealtimeEvent,
     handleRealtimeToolCall,
     options.navigate,
     options.runtime,
     options.runtimeError,
     options.runtimeLoading,
+    options.speechPlayer,
     options.transportOptions,
     resetSessionState,
     setAgentVoiceStateIfChanged,
     status,
+    stopSpeechPlayback,
     webRtc.error,
     webRtc.runtime
   ]);
@@ -488,15 +705,17 @@ export function useMobileVoiceAgent(options: UseMobileVoiceAgentOptions): UseMob
     try {
       await sessionRef.current?.stop();
       setStatus("idle");
+      stopSpeechPlayback({ invalidate: true, resetState: true });
       setAgentVoiceStateIfChanged("idle");
     } catch (nextError) {
       setError(formatError(nextError));
       setStatus("error");
+      stopSpeechPlayback({ invalidate: true, resetState: true });
       setAgentVoiceStateIfChanged("idle");
     } finally {
       resetSessionState();
     }
-  }, [resetSessionState, setAgentVoiceStateIfChanged]);
+  }, [resetSessionState, setAgentVoiceStateIfChanged, stopSpeechPlayback]);
 
   return {
     status,

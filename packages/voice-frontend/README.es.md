@@ -29,6 +29,7 @@ El paquete esta separado por responsabilidades:
 1. `src/backend.ts`
 Cliente HTTP para rutas backend:
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
@@ -70,6 +71,7 @@ Flujo del hook (`useWebVoiceAgent`):
 2. Crea backend client con `apiBaseUrl` o `NAVAI_API_URL`.
 3. En `start()`:
 - solicita client secret.
+- lee `speech.provider` desde la respuesta backend.
 - solicita listado de funciones backend.
 - construye agente Navai con funciones locales + backend.
 - conecta `RealtimeSession`.
@@ -108,7 +110,16 @@ Tipos utiles:
 - `NavaiFunctionDefinition`
 - `NavaiFunctionsRegistry`
 - `NavaiBackendFunctionDefinition`
+- `NavaiBackendSpeechConfig`
 - `UseWebVoiceAgentOptions`
+
+## Modo de voz hibrido
+
+Cuando el backend devuelve `speech.provider: "elevenlabs"`:
+
+- `useWebVoiceAgent` actualiza la sesion Realtime con `output_modalities: ["text"]`.
+- el texto final del asistente se envia a `backendClient.synthesizeSpeech(...)`.
+- la reproduccion ocurre localmente en el navegador con el audio sintetizado por ElevenLabs.
 
 ## Modelo de Tools y Comportamiento
 
@@ -237,6 +248,7 @@ Prioridad de base URL en `createNavaiBackendClient`:
 Metodos:
 
 - `createClientSecret(input?)`
+- `synthesizeSpeech({ text, ... })`
 - `listFunctions()`
 - `executeFunction({ functionName, payload })`
 
@@ -244,6 +256,7 @@ Manejo de errores:
 
 - fallos de red/HTTP lanzan error en create/execute.
 - el listado de funciones retorna warnings + lista vacia en fallos.
+- `createClientSecret()` retorna `{ value, expires_at, speech }`, donde `speech.provider` puede ser `openai` o `elevenlabs`.
 
 ## CLI Generador de Module Loaders
 

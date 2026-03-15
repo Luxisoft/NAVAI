@@ -24,7 +24,13 @@
   var buildToolDefinitions = runtime.buildToolDefinitions;
   var buildAssistantInstructions = runtime.buildAssistantInstructions;
   var readErrorMessage = runtime.readErrorMessage;
+  var normalizeSpeechProvider =
+    runtime.normalizeSpeechProvider ||
+    function (value) {
+      return asTrimmedString(value).toLowerCase() === "elevenlabs" ? "elevenlabs" : "openai";
+    };
   var requestClientSecret = runtime.requestClientSecret;
+  var requestSpeechSynthesis = runtime.requestSpeechSynthesis;
   var requestBackendFunctions = runtime.requestBackendFunctions;
   var requestRoutes = runtime.requestRoutes;
   var executeBackendFunction = runtime.executeBackendFunction;
@@ -78,9 +84,22 @@
     return "server_vad";
   }
 
-  function resolveAssistantVoiceStateFromRealtimeEvent(type) {
+  function resolveAssistantVoiceStateFromRealtimeEvent(type, speechProvider) {
     var normalizedType = asTrimmedString(type).toLowerCase();
     if (!normalizedType) {
+      return null;
+    }
+
+    if (normalizeSpeechProvider(speechProvider) === "elevenlabs") {
+      if (
+        normalizedType === "response.canceled" ||
+        normalizedType === "response.cancelled" ||
+        normalizedType === "conversation.interrupted" ||
+        normalizedType === "error"
+      ) {
+        return "idle";
+      }
+
       return null;
     }
 
@@ -104,6 +123,107 @@
     }
 
     return null;
+  }
+
+  function readAssistantTextFromResponseOutput(items) {
+    if (!Array.isArray(items)) {
+      return "";
+    }
+
+    var parts = [];
+    for (var i = 0; i < items.length; i += 1) {
+      var item = items[i];
+      if (!isRecord(item) || item.type !== "message" || item.role !== "assistant" || !Array.isArray(item.content)) {
+        continue;
+      }
+
+      for (var j = 0; j < item.content.length; j += 1) {
+        var chunk = item.content[j];
+        if (!isRecord(chunk)) {
+          continue;
+        }
+
+        var text =
+          chunk.type === "output_text"
+            ? asTrimmedString(chunk.text)
+            : chunk.type === "output_audio"
+              ? asTrimmedString(chunk.transcript)
+              : "";
+        if (text) {
+          parts.push(text);
+        }
+      }
+    }
+
+    return parts.join("\n").trim();
+  }
+
+  function extractAssistantTextFromRealtimeEvent(event) {
+    if (!isRecord(event)) {
+      return null;
+    }
+
+    var eventType = asTrimmedString(event.type).toLowerCase();
+    if (
+      eventType === "response.output_text.done" ||
+      eventType === "response.text.done" ||
+      eventType === "response.audio_transcript.done"
+    ) {
+      var directText = asTrimmedString(event.text || event.transcript || "");
+      if (!directText) {
+        return null;
+      }
+
+      var directKey = [eventType, asTrimmedString(event.response_id), asTrimmedString(event.item_id)]
+        .filter(function (value) {
+          return !!value;
+        })
+        .join(":");
+
+      return {
+        key: directKey || eventType + ":" + directText,
+        text: directText
+      };
+    }
+
+    if (eventType === "response.done" && isRecord(event.response) && Array.isArray(event.response.output)) {
+      var text = readAssistantTextFromResponseOutput(event.response.output);
+      if (!text) {
+        return null;
+      }
+
+      var responseId = asTrimmedString(event.response.id);
+      return {
+        key: responseId ? "response.done:" + responseId : "response.done:" + text,
+        text: text
+      };
+    }
+
+    return null;
+  }
+
+  function audioUrlFromSynthesis(result) {
+    if (!isRecord(result)) {
+      return "";
+    }
+
+    var audioBase64 = asTrimmedString(result.audioBase64);
+    if (!audioBase64 || typeof window.atob !== "function" || typeof Blob === "undefined" || !window.URL) {
+      return "";
+    }
+
+    var mimeType = asTrimmedString(result.mimeType) || "audio/mpeg";
+    var raw = window.atob(audioBase64);
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i += 1) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+
+    return window.URL.createObjectURL(
+      new Blob([bytes], {
+        type: mimeType
+      })
+    );
   }
 
   function extractRealtimeResponsePayload(event) {
@@ -225,6 +345,9 @@
     this.peerConnection = null;
     this.eventsChannel = null;
     this.remoteAudioEl = null;
+    this.ttsAudioEl = null;
+    this.ttsAudioUrl = "";
+    this.ttsPlaybackGeneration = 0;
     this.connectionMode = "voice";
     this.pendingTextMessages = [];
     this.interruptedResetTimer = 0;
@@ -263,6 +386,8 @@
     this.sessionFlushTimer = 0;
     this.sessionFlushInFlight = false;
     this.realtimeSettings = this.resolveRealtimeSettings();
+    this.speechProvider = normalizeSpeechProvider(isRecord(this.globalConfig.speech) ? this.globalConfig.speech.provider : "");
+    this.spokenAssistantKeys = Object.create(null);
 
     this.modelOverride = asTrimmedString(container.dataset.model);
     this.voiceOverride = asTrimmedString(container.dataset.voice);
@@ -1569,10 +1694,22 @@
       var secretInput = this.resolveClientSecretInput();
       var model = asTrimmedString(secretInput.model) || DEFAULT_MODEL;
       this.sessionModel = model;
+      this.spokenAssistantKeys = Object.create(null);
+      this.stopSpeechPlayback({
+        invalidate: true,
+        resetState: true
+      });
       var secret = await requestClientSecret(this.globalConfig, secretInput);
       if (secret && secret.session && typeof secret.session.key === "string") {
         this.setSessionKey(secret.session.key);
       }
+      this.speechProvider = normalizeSpeechProvider(
+        secret && secret.speech && secret.speech.provider
+          ? secret.speech.provider
+          : isRecord(this.globalConfig.speech)
+            ? this.globalConfig.speech.provider
+            : ""
+      );
 
       this.localStream = null;
       if (!skipMicrophone) {
@@ -1694,13 +1831,161 @@
       this.remoteAudioEl.parentNode.removeChild(this.remoteAudioEl);
     }
     this.remoteAudioEl = null;
+    this.stopSpeechPlayback({
+      invalidate: true,
+      resetState: true
+    });
     this.assistantVoiceState = "idle";
     this.sessionModel = "";
+    this.speechProvider = normalizeSpeechProvider(isRecord(this.globalConfig.speech) ? this.globalConfig.speech.provider : "");
+    this.spokenAssistantKeys = Object.create(null);
 
     this.directAliases = [];
     this.handledCalls = {};
     this.updatePttButton();
     this.updateTextControlsDisabledState(false);
+  };
+
+  NavaiVoiceWidget.prototype.clearSpeechPlaybackUrl = function () {
+    if (this.ttsAudioUrl && window.URL && typeof window.URL.revokeObjectURL === "function") {
+      try {
+        window.URL.revokeObjectURL(this.ttsAudioUrl);
+      } catch (_error) {
+        // noop
+      }
+    }
+
+    this.ttsAudioUrl = "";
+  };
+
+  NavaiVoiceWidget.prototype.stopSpeechPlayback = function (options) {
+    var invalidate = !options || options.invalidate !== false;
+    var resetState = !options || options.resetState !== false;
+    if (invalidate) {
+      this.ttsPlaybackGeneration += 1;
+    }
+
+    if (this.ttsAudioEl) {
+      try {
+        this.ttsAudioEl.pause();
+      } catch (_error) {
+        // noop
+      }
+
+      try {
+        this.ttsAudioEl.currentTime = 0;
+      } catch (_error) {
+        // noop
+      }
+
+      this.ttsAudioEl.src = "";
+      this.ttsAudioEl = null;
+    }
+
+    this.clearSpeechPlaybackUrl();
+
+    if (resetState) {
+      this.setAssistantVoiceState("idle");
+    }
+  };
+
+  NavaiVoiceWidget.prototype.playAssistantSpeech = async function (text) {
+    if (this.speechProvider !== "elevenlabs") {
+      return;
+    }
+
+    var normalizedText = asTrimmedString(text);
+    if (!normalizedText) {
+      return;
+    }
+
+    if (typeof requestSpeechSynthesis !== "function") {
+      throw new Error("Speech synthesis runtime helper is not available.");
+    }
+
+    var generation = this.ttsPlaybackGeneration + 1;
+    this.ttsPlaybackGeneration = generation;
+    this.stopSpeechPlayback({
+      invalidate: false,
+      resetState: false
+    });
+    this.setAssistantVoiceState("speaking");
+    var audioUrl = "";
+    var audioEl = null;
+
+    try {
+      var synthesis = await requestSpeechSynthesis(this.globalConfig, {
+        text: normalizedText
+      });
+      if (this.speechProvider !== "elevenlabs" || this.ttsPlaybackGeneration !== generation) {
+        return;
+      }
+
+      audioUrl = audioUrlFromSynthesis(synthesis);
+      if (!audioUrl) {
+        throw new Error("Failed to create a playable audio URL from ElevenLabs response.");
+      }
+
+      this.ttsAudioUrl = audioUrl;
+      audioEl = new Audio(audioUrl);
+      audioEl.preload = "auto";
+      this.ttsAudioEl = audioEl;
+
+      await new Promise(function (resolve, reject) {
+        var settled = false;
+
+        function cleanup() {
+          audioEl.onended = null;
+          audioEl.onerror = null;
+          audioEl.onpause = null;
+        }
+
+        function finish(error) {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        }
+
+        audioEl.onended = function () {
+          finish();
+        };
+        audioEl.onerror = function () {
+          finish(new Error("Audio playback failed."));
+        };
+        audioEl.onpause = function () {
+          if (audioEl.ended || audioEl.currentTime === 0 || generation !== this.ttsPlaybackGeneration) {
+            finish();
+          }
+        }.bind(this);
+
+        var playResult = audioEl.play();
+        if (playResult && typeof playResult.then === "function") {
+          playResult.catch(function (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+          });
+        }
+      }.bind(this));
+    } finally {
+      if (audioEl && this.ttsAudioEl === audioEl) {
+        this.ttsAudioEl = null;
+      }
+
+      if (audioUrl && this.ttsAudioUrl === audioUrl) {
+        this.clearSpeechPlaybackUrl();
+      }
+      if (this.ttsPlaybackGeneration === generation) {
+        this.setAssistantVoiceState("idle");
+      }
+    }
   };
 
   NavaiVoiceWidget.prototype.resolveClientSecretInput = function () {
@@ -1853,6 +2138,7 @@
     var defaults = isRecord(this.globalConfig.defaults) ? this.globalConfig.defaults : {};
     var baseInstructions = this.instructionsOverride || asTrimmedString(defaults.instructions);
     var voice = this.voiceOverride || asTrimmedString(defaults.voice);
+    var speechProvider = normalizeSpeechProvider(this.speechProvider);
     var turnDetection = this.buildTurnDetectionConfig();
     var toolOptions = {
       allowStopTool: this.assistantStopToolEnabled
@@ -1875,14 +2161,15 @@
       type: "realtime",
       instructions: instructions,
       tools: toolsResult.tools,
-      tool_choice: "auto"
+      tool_choice: "auto",
+      output_modalities: speechProvider === "elevenlabs" ? ["text"] : ["audio"]
     };
 
-    if (voice || turnDetection !== undefined) {
+    if ((speechProvider !== "elevenlabs" && voice) || turnDetection !== undefined) {
       session.audio = {};
     }
 
-    if (voice) {
+    if (speechProvider !== "elevenlabs" && voice) {
       session.audio.output = {
         voice: voice
       };
@@ -1918,7 +2205,7 @@
     }
 
     var normalizedType = asTrimmedString(type).toLowerCase();
-    var assistantVoiceState = resolveAssistantVoiceStateFromRealtimeEvent(normalizedType);
+    var assistantVoiceState = resolveAssistantVoiceStateFromRealtimeEvent(normalizedType, this.speechProvider);
     if (!normalizedType) {
       return;
     }
@@ -1930,6 +2217,10 @@
     }
 
     if (normalizedType === "input_audio_buffer.speech_started" || normalizedType === "conversation.item.input_audio_transcription.started") {
+      this.stopSpeechPlayback({
+        invalidate: true,
+        resetState: true
+      });
       this.setActivityState("listening");
       return;
     }
@@ -1940,6 +2231,10 @@
       normalizedType === "response.canceled" ||
       normalizedType === "response.cancelled"
     ) {
+      this.stopSpeechPlayback({
+        invalidate: true,
+        resetState: false
+      });
       this.setAssistantVoiceState("idle");
       this.setActivityState("interrupted");
       return;
@@ -1965,6 +2260,10 @@
     }
 
     if (normalizedType === "error") {
+      this.stopSpeechPlayback({
+        invalidate: true,
+        resetState: false
+      });
       this.setAssistantVoiceState("idle");
       this.setActivityState("idle");
       return;
@@ -1995,6 +2294,21 @@
       this.queueSessionMessage(sessionMessages[s]);
     }
     this.updateRealtimeActivityFromEvent(type, parsed);
+
+    if (this.speechProvider === "elevenlabs") {
+      var assistantTextPayload = extractAssistantTextFromRealtimeEvent(parsed);
+      if (
+        assistantTextPayload &&
+        !Object.prototype.hasOwnProperty.call(this.spokenAssistantKeys, assistantTextPayload.key)
+      ) {
+        this.spokenAssistantKeys[assistantTextPayload.key] = true;
+        this.playAssistantSpeech(assistantTextPayload.text).catch(
+          function (error) {
+            this.appendLog("Failed to synthesize assistant speech: " + String(error), "error");
+          }.bind(this)
+        );
+      }
+    }
 
     if (type === "error") {
       var errorMessage = "Realtime error event received.";

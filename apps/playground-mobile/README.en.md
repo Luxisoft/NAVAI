@@ -26,6 +26,7 @@ React Native (Expo) playground to test `@navai/voice-mobile` + NAVAI backend wit
 - `.env` configuration (no VITE)
 - `VoiceNavigator` using `useMobileVoiceAgent` from `@navai/voice-mobile`
 - UI that reacts to assistant voice state (`idle`/`speaking`)
+- local Expo playback when backend uses ElevenLabs in hybrid mode
 
 ## Requirements
 
@@ -50,6 +51,7 @@ Notes:
 - `NAVAI_ROUTES_FILE`: routes file the agent can navigate.
 - Variables are exposed at runtime via `app.config.js`.
 - `generate:ai-modules` uses official CLI from `@navai/voice-mobile` (no duplicate local script).
+- `NAVAI_TTS_PROVIDER` and `ELEVENLABS_*` live in `@navai/playground-api`, not in this playground.
 
 ## Expected structure
 
@@ -103,6 +105,8 @@ npm run android --workspace @navai/playground-mobile -- --device
 - `isAgentSpeaking`: `boolean`
 
 The playground `VoiceNavigator` uses these fields to update text, button label, and colors when the agent starts/stops speaking.
+
+If backend `playground-api` uses `NAVAI_TTS_PROVIDER=elevenlabs`, the realtime session still runs on OpenAI for microphone/tools, but final assistant speech is synthesized locally through the playground Expo `speechPlayer`.
 
 ## Expo Go vs Development Build
 

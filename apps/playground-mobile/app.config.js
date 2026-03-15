@@ -11,6 +11,7 @@ function readOptional(value) {
 
 module.exports = ({ config }) => ({
   ...config,
+  plugins: [...(Array.isArray(config.plugins) ? config.plugins : []), "expo-audio"],
   extra: {
     ...(config.extra ?? {}),
     NAVAI_API_URL: readOptional(process.env.NAVAI_API_URL),

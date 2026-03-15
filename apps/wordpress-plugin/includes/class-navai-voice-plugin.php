@@ -245,7 +245,7 @@ class Navai_Voice_Plugin
             true
         );
 
-        $settings = $this->settings->get_settings();
+        $settings = $this->settings->get_runtime_settings();
         $turnDetectionMode = $this->sanitize_realtime_turn_detection_mode($settings['realtime_turn_detection_mode'] ?? 'server_vad');
         $voiceInputMode = $this->sanitize_frontend_voice_input_mode($settings['frontend_voice_input_mode'] ?? 'vad');
         $config = [
@@ -271,6 +271,9 @@ class Navai_Voice_Plugin
                 'voiceInputMode' => $voiceInputMode,
                 'textInputEnabled' => !array_key_exists('frontend_text_input_enabled', $settings) || !empty($settings['frontend_text_input_enabled']),
                 'textPlaceholder' => sanitize_text_field((string) ($settings['frontend_text_placeholder'] ?? 'Escribe un mensaje...')),
+            ],
+            'speech' => [
+                'provider' => $this->sanitize_tts_provider($settings['tts_provider'] ?? 'openai'),
             ],
             'widget' => [
                 'autoInitializeOnLoad' => !empty($settings['frontend_auto_initialize']),
@@ -324,7 +327,7 @@ class Navai_Voice_Plugin
      */
     public function render_voice_shortcode(array $atts = []): string
     {
-        $settings = $this->settings->get_settings();
+        $settings = $this->settings->get_runtime_settings();
         $displayMode = $this->resolve_frontend_display_mode($settings);
         if ($displayMode !== 'shortcode') {
             return '';
@@ -386,7 +389,7 @@ class Navai_Voice_Plugin
 
     public function render_global_voice_widget(): void
     {
-        $settings = $this->settings->get_settings();
+        $settings = $this->settings->get_runtime_settings();
         if (!$this->can_render_global_widget_for_current_context($settings)) {
             return;
         }

@@ -7,10 +7,11 @@
 
 Paquete backend para aplicaciones de voz con Navai.
 
-Este paquete resuelve dos responsabilidades backend:
+Este paquete resuelve tres responsabilidades backend:
 
 1. Generar `client_secret` efimero y seguro para OpenAI Realtime.
-2. Descubrir, validar, exponer y ejecutar tools backend desde tu codigo.
+2. Hacer proxy opcional de sintesis de voz con ElevenLabs para salida hibrida.
+3. Descubrir, validar, exponer y ejecutar tools backend desde tu codigo.
 
 ## Instalacion
 
@@ -38,9 +39,10 @@ Flujo de extremo a extremo:
 1. Frontend/mobile llama `POST /navai/realtime/client-secret`.
 2. Backend valida opciones y politica de API key.
 3. Backend llama OpenAI `POST https://api.openai.com/v1/realtime/client_secrets`.
-4. Frontend/mobile llama `GET /navai/functions` para descubrir tools.
-5. El agente llama `POST /navai/functions/execute` con `function_name` y `payload`.
-6. Backend ejecuta solo nombres permitidos del registry cargado.
+4. Cuando `speech.provider=elevenlabs`, frontend/mobile llama despues `POST /navai/speech/synthesize` con el texto final del asistente.
+5. Frontend/mobile llama `GET /navai/functions` para descubrir tools.
+6. El agente llama `POST /navai/functions/execute` con `function_name` y `payload`.
+7. Backend ejecuta solo nombres permitidos del registry cargado.
 
 Nota sobre estado de voz del agente:
 
@@ -54,6 +56,7 @@ Helpers de client secret:
 - `getNavaiVoiceBackendOptionsFromEnv(env?)`
 - `createRealtimeClientSecret(options, request?)`
 - `createExpressClientSecretHandler(options)`
+- `synthesizeSpeech(options, request?)`
 
 Integracion Express:
 
@@ -68,6 +71,10 @@ Tipos exportados importantes:
 
 - `NavaiVoiceBackendOptions`
 - `CreateClientSecretRequest`
+- `OpenAIRealtimeClientSecretResponse`
+- `SynthesizeSpeechRequest`
+- `SynthesizeSpeechResponse`
+- `NavaiSpeechProvider`
 - `ResolveNavaiBackendRuntimeConfigOptions`
 - `NavaiFunctionDefinition`
 - `NavaiFunctionModuleLoaders`
@@ -78,12 +85,14 @@ Tipos exportados importantes:
 `registerNavaiExpressRoutes` registra por defecto:
 
 - `POST /navai/realtime/client-secret`
+- `POST /navai/speech/synthesize`
 - `GET /navai/functions`
 - `POST /navai/functions/execute`
 
 Puedes cambiar paths con:
 
 - `clientSecretPath`
+- `speechSynthesizePath`
 - `functionsListPath`
 - `functionsExecutePath`
 
@@ -111,10 +120,12 @@ Comportamiento de `createRealtimeClientSecret`:
 - `model` default: `gpt-realtime`
 - `voice` default: `marin`
 - `instructions` incluye base mas lineas opcionales de idioma/acento/tono.
+- cuando `NAVAI_TTS_PROVIDER=elevenlabs`, el backend solicita salida Realtime solo en texto con `output_modalities: ["text"]`.
 
 4. Llama endpoint de client secret de OpenAI y retorna:
 - `value`
 - `expires_at`
+- `speech.provider`
 
 Body aceptado por la ruta:
 
@@ -135,7 +146,30 @@ Respuesta:
 ```json
 {
   "value": "ek_...",
-  "expires_at": 1730000000
+  "expires_at": 1730000000,
+  "speech": {
+    "provider": "elevenlabs"
+  }
+}
+```
+
+Body de sintesis de voz:
+
+```json
+{
+  "text": "Hola, soy NAVAI.",
+  "voiceId": "voice_id_opcional",
+  "modelId": "model_id_opcional"
+}
+```
+
+Respuesta de sintesis:
+
+```json
+{
+  "provider": "elevenlabs",
+  "mimeType": "audio/mpeg",
+  "audioBase64": "SUQz..."
 }
 ```
 
@@ -258,6 +292,17 @@ Claves env principales:
 - `OPENAI_REALTIME_VOICE_ACCENT`
 - `OPENAI_REALTIME_VOICE_TONE`
 - `OPENAI_REALTIME_CLIENT_SECRET_TTL`
+- `NAVAI_TTS_PROVIDER`
+- `ELEVENLABS_API_KEY`
+- `ELEVENLABS_BASE_URL`
+- `ELEVENLABS_VOICE_ID`
+- `ELEVENLABS_MODEL_ID`
+- `ELEVENLABS_OUTPUT_FORMAT`
+- `ELEVENLABS_OPTIMIZE_STREAMING_LATENCY`
+- `ELEVENLABS_STABILITY`
+- `ELEVENLABS_SIMILARITY_BOOST`
+- `ELEVENLABS_STYLE`
+- `ELEVENLABS_USE_SPEAKER_BOOST`
 - `NAVAI_ALLOW_FRONTEND_API_KEY`
 - `NAVAI_FUNCTIONS_FOLDERS`
 - `NAVAI_AGENTS_FOLDERS`
@@ -294,6 +339,7 @@ app.listen(3000);
 Recomendaciones para produccion:
 
 - mantener `OPENAI_API_KEY` solo en servidor.
+- mantener `ELEVENLABS_API_KEY` solo en servidor.
 - mantener `NAVAI_ALLOW_FRONTEND_API_KEY=false` en produccion.
 - restringir CORS en tu capa app.
 - monitorear y exponer `warnings` de runtime y registry.
